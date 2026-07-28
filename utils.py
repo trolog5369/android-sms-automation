@@ -7,6 +7,8 @@ Device diagnostics have moved to :mod:`diagnostics`.
 """
 
 import sys
+from pathlib import Path
+from typing import Optional
 
 from config import APP_NAME, PREVIEW_COUNT, SEPARATOR
 from models import Contact
@@ -29,17 +31,23 @@ def print_header() -> None:
 def print_summary(
     total: int,
     result: ValidationResult,
+    file_path: Optional[Path] = None,
 ) -> None:
     """Print a summary of contact validation statistics.
 
     Args:
-        total: Total number of raw contacts read from Excel.
+        total: Total number of raw contacts read from file.
         result: The :class:`ValidationResult` from the validator.
+        file_path: Optional Path to the contact file loaded.
     """
-    print(f"  Total contacts:              {total}")
+    if file_path is not None:
+        fmt_name = file_path.suffix.upper().lstrip(".")
+        print(f"  File:                        {file_path.name}")
+        print(f"  Format:                      {fmt_name}")
+    print(f"  Total rows:                  {total}")
     print(f"  Valid contacts:              {len(result.valid_contacts)}")
     print(f"  Invalid contacts:            {len(result.invalid_contacts)}")
-    print(f"  Duplicate contacts removed:  {result.duplicates_removed}")
+    print(f"  Duplicates removed:          {result.duplicates_removed}")
     print()
 
 

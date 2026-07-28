@@ -14,28 +14,35 @@ from models import Contact
 
 
 def read_contacts(file_path: Path) -> list[Contact]:
-    """Read contacts from an Excel file and return a list of Contact objects.
+    """Read contacts from an Excel (.xlsx/.xls) or CSV (.csv) file and return a list of Contact objects.
 
     This function:
-    - Reads the spreadsheet with pandas.
+    - Automatically detects file format (.xlsx / .xls vs .csv).
+    - Reads the file with pandas.
     - Drops rows where *all* cells are empty.
     - Converts float / scientific-notation mobile numbers to 10-digit strings.
     - Preserves leading zeros by treating the result as a string throughout.
 
     Args:
-        file_path: Absolute or relative path to the ``.xlsx`` file.
+        file_path: Absolute or relative path to the ``.xlsx`` or ``.csv`` file.
 
     Returns:
         A list of :class:`Contact` instances parsed from the file.
 
     Raises:
         FileNotFoundError: If *file_path* does not exist.
-        ValueError: If expected columns are missing from the spreadsheet.
+        ValueError: If file format is unsupported or expected columns are missing.
     """
     if not file_path.exists():
-        raise FileNotFoundError(f"Excel file not found: {file_path}")
+        raise FileNotFoundError(f"Contact file not found: {file_path}")
 
-    df: pd.DataFrame = pd.read_excel(file_path)
+    ext = file_path.suffix.lower()
+    if ext in (".xlsx", ".xls"):
+        df: pd.DataFrame = pd.read_excel(file_path)
+    elif ext == ".csv":
+        df: pd.DataFrame = pd.read_csv(file_path, dtype=str)
+    else:
+        raise ValueError(f"Unsupported file format: '{ext}'. Expected .xlsx, .xls, or .csv")
 
     _validate_columns(df)
 

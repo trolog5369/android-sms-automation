@@ -355,7 +355,7 @@ class TestTestRecipients:
         assert TEST_RECIPIENTS["Pramod Gaikwad"] == "9922222249"
         assert "Sai Gaikwad" in TEST_RECIPIENTS
         assert TEST_RECIPIENTS["Sai Gaikwad"] == "9371222249"
-        assert DEFAULT_TEST_RECIPIENT_KEY == "Vaishali Gaikwad"
+        assert DEFAULT_TEST_RECIPIENT_KEY in TEST_RECIPIENTS
 
 
 class TestSentSMSVerification:

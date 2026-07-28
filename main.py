@@ -18,8 +18,8 @@ import logging
 import sys
 
 from config import (
+    CONTACT_FILE,
     DEFAULT_TEST_RECIPIENT_KEY,
-    EXCEL_FILE,
     LOG_DIR,
     MESSAGE_FILE,
     SMS_TEST_RECIPIENT,
@@ -136,13 +136,13 @@ def main() -> None:
 
         # Step A: Load contacts
         try:
-            contacts: list[Contact] = read_contacts(EXCEL_FILE)
+            contacts: list[Contact] = read_contacts(CONTACT_FILE)
         except FileNotFoundError as exc:
-            logger.error("Excel file error: %s", exc)
+            logger.error("Contact file error: %s", exc)
             print(f"  [ERROR] {exc}")
             sys.exit(1)
         except ValueError as exc:
-            logger.error("Excel column error: %s", exc)
+            logger.error("Contact file column error: %s", exc)
             print(f"  [ERROR] {exc}")
             sys.exit(1)
 
@@ -150,7 +150,7 @@ def main() -> None:
 
         # Step B: Validate contacts & display summary
         result: ValidationResult = validate_contacts(contacts)
-        print_summary(total_contacts, result)
+        print_summary(total_contacts, result, CONTACT_FILE)
 
         # Step C: Device Readiness Check
         report = run_diagnostics()
@@ -279,13 +279,13 @@ def main() -> None:
 
     # Step 1: Read contacts
     try:
-        contacts = read_contacts(EXCEL_FILE)
+        contacts = read_contacts(CONTACT_FILE)
     except FileNotFoundError as exc:
-        logger.error("Excel file error: %s", exc)
+        logger.error("Contact file error: %s", exc)
         print(f"  [ERROR] {exc}")
         sys.exit(1)
     except ValueError as exc:
-        logger.error("Excel column error: %s", exc)
+        logger.error("Contact file column error: %s", exc)
         print(f"  [ERROR] {exc}")
         sys.exit(1)
 
@@ -309,7 +309,7 @@ def main() -> None:
         sys.exit(1)
 
     # Step 4: Display contact & message preview
-    print_summary(total_contacts, result)
+    print_summary(total_contacts, result, CONTACT_FILE)
     print_contact_preview(result.valid_contacts)
     print_message_preview(message)
 
