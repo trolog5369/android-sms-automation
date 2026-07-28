@@ -220,6 +220,7 @@ def execute_adb(command: str) -> str:
     try:
         result: subprocess.CompletedProcess[str] = subprocess.run(
             cmd_parts,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=_ADB_TIMEOUT,

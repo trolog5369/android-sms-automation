@@ -263,17 +263,22 @@ def _check_cooldown(force: bool = False) -> tuple[bool, str]:
 
 # ── Public API ───────────────────────────────────────────────────────
 
-def open_sms_composer(recipient: str, message: str, force: bool = False) -> SMSComposerResult:
+def open_sms_composer(
+    recipient: str,
+    message: str,
+    force: bool = False,
+    cached_sim: Optional[SelectedSIM] = None,
+    fast_mode: bool = False,
+) -> SMSComposerResult:
     """Open the Android SMS composer with a pre-filled recipient and message.
 
     Flow:
     1. Check anti-spam cooldown protection.
-    2. Verify exactly one authorized device is connected.
-    3. Resolve the sending SIM from config.
+    2. Verify device connected (skipped if fast_mode=True).
+    3. Resolve the sending SIM (uses cached_sim if provided).
     4. Build the Android SENDTO intent.
     5. Launch the intent via ADB.
-    6. Verify the SMS app started.
-    7. Return a :class:`SMSComposerResult`.
+    6. Return a :class:`SMSComposerResult`.
 
     **Does NOT send the SMS.** The composer opens and waits for the user.
 
@@ -281,6 +286,8 @@ def open_sms_composer(recipient: str, message: str, force: bool = False) -> SMSC
         recipient: The phone number to fill as the SMS recipient.
         message: The message body (supports Unicode / Marathi text).
         force: If True, bypass the cooldown protection.
+        cached_sim: Optional pre-resolved :class:`SelectedSIM` to reuse.
+        fast_mode: If True, bypass device re-verification and foreground checks.
 
     Returns:
         A populated :class:`SMSComposerResult`.
@@ -308,23 +315,30 @@ def open_sms_composer(recipient: str, message: str, force: bool = False) -> SMSC
     logs.append(f"Unicode Detected: {'YES' if result.unicode_detected else 'NO'}")
 
     # ── Step 1: Device check ─────────────────────────────────────────
-    try:
-        serial: str = verify_single_device()
-        logs.append(f"Device          : {serial} (authorized)")
-    except (
-        ADBNotFoundError,
-        NoDeviceConnectedError,
-        MultipleDevicesError,
-        DeviceUnauthorizedError,
-        ADBCommandError,
-        ADBTimeoutError,
-    ) as exc:
-        result.error_message = str(exc)
-        logs.append(f"Device check FAILED: {exc}")
-        return result
+    if not fast_mode:
+        try:
+            serial: str = verify_single_device()
+            logs.append(f"Device          : {serial} (authorized)")
+        except (
+            ADBNotFoundError,
+            NoDeviceConnectedError,
+            MultipleDevicesError,
+            DeviceUnauthorizedError,
+            ADBCommandError,
+            ADBTimeoutError,
+        ) as exc:
+            result.error_message = str(exc)
+            logs.append(f"Device check FAILED: {exc}")
+            return result
+    else:
+        logs.append("Device          : (cached/fast mode)")
 
     # ── Step 2: Resolve sending SIM ──────────────────────────────────
-    selected = resolve_sending_sim()
+    if cached_sim is not None:
+        selected = cached_sim
+    else:
+        selected = resolve_sending_sim()
+
     result.selected_sim = selected
 
     logs.append(f"Sending SIM     : SIM {selected.slot} ({selected.carrier})")
@@ -361,29 +375,28 @@ def open_sms_composer(recipient: str, message: str, force: bool = False) -> SMSC
         logs.append(f"Intent FAILED   : {exc}")
         return result
 
-    # ── Step 4: Verify the app started ──────────────────────────────
-    # Give the app a moment to launch
-    time.sleep(1)
-    try:
-        window_output: str = execute_adb("shell dumpsys window windows")
-        # Look for the SMS app package in the focused window
-        sms_active = any(
-            pkg in window_output
-            for pkg in (
-                "com.google.android.apps.messaging",
-                "com.android.mms",
-                "com.samsung.android.messaging",
-                "com.vivo.message",
+    # ── Step 4: Foreground check (skipped in fast_mode) ──────────────
+    if not fast_mode:
+        time.sleep(1)
+        try:
+            window_output: str = execute_adb("shell dumpsys window windows")
+            sms_active = any(
+                pkg in window_output
+                for pkg in (
+                    "com.google.android.apps.messaging",
+                    "com.android.mms",
+                    "com.samsung.android.messaging",
+                    "com.vivo.message",
+                )
             )
-        )
-        if sms_active:
-            logs.append("SMS Intent Status: SUCCESS — SMS app is in foreground")
-        else:
-            logs.append("SMS Intent Status: WARNING — could not confirm SMS app is foreground")
-    except (ADBCommandError, ADBTimeoutError):
-        logs.append("SMS Intent Status: could not verify foreground app")
+            if sms_active:
+                logs.append("SMS Intent Status: SUCCESS — SMS app is in foreground")
+            else:
+                logs.append("SMS Intent Status: WARNING — could not confirm SMS app is foreground")
+        except (ADBCommandError, ADBTimeoutError):
+            logs.append("SMS Intent Status: could not verify foreground app")
 
-    # If intent returned "Starting: Intent" it succeeded
+    # If intent returned "Starting: Intent" or empty output, it succeeded
     if "Starting: Intent" in result.intent_output or result.intent_output == "":
         result.success = True
         logs.append("Result          : COMPOSER OPENED (no SMS sent)")

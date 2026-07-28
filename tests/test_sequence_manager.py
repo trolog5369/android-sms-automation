@@ -103,8 +103,12 @@ class TestSequenceWorkflow:
         with patch("builtins.input", side_effect=lambda _: next(inputs)), \
              patch("sequence_manager.open_sms_composer", return_value=mock_result) as mock_composer:
             run_manual_sequence(contacts, "Test Msg", start_index=3, limit=2)
-            # Should launch for contact index 3 (9000000003) and 4 (9000000004)
-            mock_composer.assert_any_call("9000000003", "Test Msg", force=True)
+            # Should launch for contact index 3 (9000000003)
+            assert mock_composer.call_count >= 1
+            first_call_args = mock_composer.call_args_list[0]
+            assert first_call_args[0][0] == "9000000003"
+            assert first_call_args[0][1] == "Test Msg"
+            assert first_call_args[1].get("fast_mode") is True
 
     def test_resume_skips_logged_contacts(self, clean_sequence_log):
         """--resume skips contacts that are already in log."""
@@ -122,7 +126,10 @@ class TestSequenceWorkflow:
              patch("sequence_manager.open_sms_composer", return_value=mock_result) as mock_composer:
             run_manual_sequence(contacts, "Test Msg", resume=True)
             # Person 1 skipped, Person 2 launched
-            mock_composer.assert_called_with("9000000002", "Test Msg", force=True)
+            assert mock_composer.call_count == 1
+            call_args = mock_composer.call_args_list[0]
+            assert call_args[0][0] == "9000000002"
+            assert call_args[1].get("fast_mode") is True
 
 
 class TestSafetyGuard:

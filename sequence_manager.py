@@ -24,7 +24,12 @@ from config import (
     SMS_AUTO_SEND_ENABLED,
 )
 from models import Contact
-from sms_composer import SMSComposerResult, open_sms_composer
+from sms_composer import (
+    SelectedSIM,
+    SMSComposerResult,
+    open_sms_composer,
+    resolve_sending_sim,
+)
 
 # Reconfigure stdout and stdin for UTF-8 on Windows consoles
 if hasattr(sys.stdout, "reconfigure"):
@@ -132,7 +137,7 @@ def run_manual_sequence(
     limit: Optional[int] = None,
     resume: bool = False,
 ) -> None:
-    """Execute the sequential manual SMS workflow.
+    """Execute the high-speed sequential manual SMS workflow.
 
     Args:
         contacts: List of valid :class:`~models.Contact` objects.
@@ -173,19 +178,27 @@ def run_manual_sequence(
         print("  No contacts match the specified sequence filter (--resume / --start / --limit).")
         return
 
-    # Initial statistics counters
-    sent_count, skipped_count = get_sequence_log_counts() if resume else (0, 0)
+    # Initial log statistics
+    log_sent_total, log_skipped_total = get_sequence_log_counts() if resume else (0, 0)
+    session_sent = 0
+    session_skipped = 0
     processed_this_run = 0
+
+    session_start_time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     start_time = time.time()
+
+    # ── 2. Pre-fetch Device Info & SIM Settings (ONCE for high speed) ──
+    cached_sim: SelectedSIM = resolve_sending_sim()
 
     print()
     print(SEPARATOR)
-    print("  Manual Sequential SMS Workflow")
+    print("  High-Speed Manual SMS Campaign")
     print(SEPARATOR)
     print(f"  Total Valid Contacts : {total_valid}")
     print(f"  Contacts To Process  : {work_count}")
     if resume:
-        print(f"  Already Logged       : {sent_count} sent, {skipped_count} skipped")
+        print(f"  Already Logged       : {log_sent_total} sent, {log_skipped_total} skipped")
+    print(f"  Sending SIM          : SIM {cached_sim.slot} ({cached_sim.carrier})")
     print(SEPARATOR)
     print()
 
@@ -203,14 +216,21 @@ def run_manual_sequence(
 
     print()
 
-    # ── 2. Sequential Loop ───────────────────────────────────────────
+    # ── 3. High-Speed Sequential Loop ────────────────────────────────
     for step_num, (orig_idx, contact) in enumerate(indexed_contacts, start=1):
-        # Open SMS composer (force=True so sequence stepping is never blocked by cooldown)
-        result: SMSComposerResult = open_sms_composer(contact.mobile_number, message, force=True)
+        # High-speed launch: force=True, cached_sim=cached_sim, fast_mode=True
+        # (Skips redundant ADB device check, SIM re-query, and foreground sleep)
+        result: SMSComposerResult = open_sms_composer(
+            contact.mobile_number,
+            message,
+            force=True,
+            cached_sim=cached_sim,
+            fast_mode=True,
+        )
 
-        sim_slot = result.selected_sim.slot if result.selected_sim else "unknown"
-        carrier = result.selected_sim.carrier if result.selected_sim else "unknown"
-        sub_id = result.selected_sim.subscription_id if result.selected_sim else "not set"
+        sim_slot = cached_sim.slot
+        carrier = cached_sim.carrier
+        sub_id = cached_sim.subscription_id or "not set"
 
         print(SEPARATOR)
         print(f"Contact {orig_idx} / {total_valid}  (Step {step_num} of {work_count})")
@@ -226,69 +246,102 @@ def run_manual_sequence(
         if result.success:
             print("Composer opened successfully.")
         else:
-            print(f"WARNING: Composer failed: {result.error_message}")
+            print(f"WARNING: Composer launch output: {result.error_message or 'Check phone'}")
 
         print()
         print("Waiting for manual Send...")
         print()
-        print("After pressing Send on your phone,")
-        print("press ENTER here to continue.")
-        print("Type 's' then ENTER to skip this contact.")
-        print("Type 'q' then ENTER to quit.")
+        print("Shortcuts:")
+        print("  ENTER = sent")
+        print("  s     = skip")
+        print("  p     = pause")
+        print("  q     = quit and save")
         print(SEPARATOR)
         print()
 
         try:
-            choice = input("Choice [ENTER=Sent / s=Skip / q=Quit]: ").strip().lower()
+            choice = input("Choice [ENTER=Sent / s=Skip / p=Pause / q=Quit]: ").strip().lower()
         except (KeyboardInterrupt, EOFError):
             choice = "q"
 
+        # Handle Pause
+        if choice in ("p", "pause"):
+            print()
+            print(SEPARATOR)
+            print("  PAUSED: Campaign sequence paused.")
+            print("  Press ENTER to resume...")
+            print(SEPARATOR)
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
+                pass
+            print("  Resuming campaign sequence...")
+            print()
+            choice = input("Choice for current contact [ENTER=Sent / s=Skip / q=Quit]: ").strip().lower()
+
         if choice in ("q", "quit"):
             print()
-            print("  Sequence quit by user.")
+            print("  Sequence quit and saved by user.")
             log_sequence_step(orig_idx, contact.advocate_name, contact.mobile_number, "quit")
             break
 
         elif choice in ("s", "skip"):
             status = "skipped"
-            skipped_count += 1
+            session_skipped += 1
+            log_skipped_total += 1
             print(f"  -> Marked as SKIPPED: {contact.advocate_name}")
         else:
             status = "sent"
-            sent_count += 1
+            session_sent += 1
+            log_sent_total += 1
             print(f"  -> Marked as SENT: {contact.advocate_name}")
 
         log_sequence_step(orig_idx, contact.advocate_name, contact.mobile_number, status)
         processed_this_run += 1
-        remaining_count = work_count - step_num
+        remaining_in_run = work_count - step_num
+
+        # Session timing & statistics calculations
+        elapsed_now = max(0.1, time.time() - start_time)
+        pct_complete = (step_num / work_count) * 100
+        avg_sec = elapsed_now / processed_this_run
+        est_left_sec = avg_sec * remaining_in_run
 
         print()
         print("Progress:")
-        print(f"  Sent      : {sent_count}")
-        print(f"  Skipped   : {skipped_count}")
-        print(f"  Remaining : {remaining_count}")
+        print(f"  Sent             : {session_sent} (Session) / {log_sent_total} (Total Logged)")
+        print(f"  Skipped          : {session_skipped} (Session) / {log_skipped_total} (Total Logged)")
+        print(f"  Remaining        : {remaining_in_run} (This Run)")
+        print(f"  Percent Complete : {pct_complete:.1f}%")
+        print(f"  Avg Speed        : {avg_sec:.1f}s / contact")
+        print(f"  Est. Time Left   : {format_elapsed_time(est_left_sec)}")
         print()
 
-    # ── 3. Completion Summary ────────────────────────────────────────
-    elapsed = time.time() - start_time
-    remaining_total = max(0, total_valid - (sent_count + skipped_count))
+    # ── 4. Session Statistics Summary ────────────────────────────────
+    elapsed_total = time.time() - start_time
+    total_remaining_global = max(0, total_valid - (log_sent_total + log_skipped_total))
+    final_avg = (elapsed_total / processed_this_run) if processed_this_run > 0 else 0.0
 
     print(SEPARATOR)
-    print("  Manual SMS Sequence Summary")
+    print("  High-Speed Campaign Session Summary")
     print(SEPARATOR)
     print()
-    print(f"  Total Contacts : {total_valid}")
-    print(f"  Sent           : {sent_count}")
-    print(f"  Skipped        : {skipped_count}")
-    print(f"  Remaining      : {remaining_total}")
-    print(f"  Elapsed Time   : {format_elapsed_time(elapsed)}")
+    print(f"  Session Started  : {session_start_time_str}")
+    print(f"  Total Contacts   : {total_valid}")
+    print(f"  Processed Today  : {processed_this_run}")
+    print(f"  Sent (Session)   : {session_sent}")
+    print(f"  Skipped (Session): {session_skipped}")
+    print(f"  Total Sent (Log) : {log_sent_total}")
+    print(f"  Total Skipped    : {log_skipped_total}")
+    print(f"  Remaining        : {total_remaining_global}")
+    print(f"  Avg Speed        : {final_avg:.1f}s / contact")
+    print(f"  Session Duration : {format_elapsed_time(elapsed_total)}")
     print()
     print(SEPARATOR)
     print()
     logger.info(
-        "Manual sequence finished. Processed: %d, Sent: %d, Skipped: %d, Elapsed: %.1fs",
+        "Campaign session finished. Processed: %d, Sent: %d, Skipped: %d, Duration: %.1fs",
         processed_this_run,
-        sent_count,
-        skipped_count,
-        elapsed,
+        session_sent,
+        session_skipped,
+        elapsed_total,
     )
