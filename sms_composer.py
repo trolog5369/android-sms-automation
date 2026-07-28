@@ -439,3 +439,57 @@ def print_composer_result(result: SMSComposerResult) -> None:
     print("  ⚠  SMS COMPOSER OPENED — NO MESSAGE WAS SENT AUTOMATICALLY")
     print(SEPARATOR)
     print()
+
+
+def check_sent_sms_status(recipient_number: str) -> str:
+    """Attempt to check sent SMS status via ADB without requesting extra permissions.
+
+    Android restricts access to content://sms/sent to system/phone UID.
+    This helper attempts the query and returns a clear diagnostic message if denied.
+    """
+    try:
+        output = execute_adb(f"shell content query --uri content://sms/sent --where \"address='{recipient_number}'\"")
+        if "Row:" in output:
+            return f"Sent SMS record found in provider for {recipient_number}."
+        elif output.strip():
+            return f"Query output: {output.strip()}"
+    except (ADBCommandError, ADBTimeoutError) as exc:
+        pass
+
+    return "Android does not expose sent SMS verification without additional permissions."
+
+
+def print_single_test_send_report(result: SMSComposerResult, recipient_name: str) -> None:
+    """Print detailed logging output for single SMS manual send test."""
+    from config import SEPARATOR
+
+    print()
+    print(SEPARATOR)
+    print("  Single SMS Manual Send Verification")
+    print(SEPARATOR)
+    print()
+    print(f"  Recipient Name  : {recipient_name}")
+    print(f"  Recipient Number: {result.recipient}")
+    print(f"  Message Length  : {result.message_length} characters")
+    print(f"  Unicode         : {'YES' if result.unicode_detected else 'NO'}")
+    print()
+
+    if result.selected_sim:
+        sim = result.selected_sim
+        print(f"  Selected SIM    : SIM {sim.slot}")
+        print(f"  SIM Slot        : {sim.slot}")
+        print(f"  Subscription ID : {sim.subscription_id or 'not set'}")
+        print(f"  Carrier         : {sim.carrier}")
+        print()
+
+    print(f"  Composer Opened : {'YES ✔' if result.success else 'NO ✘'}")
+    print("  User Send Req.  : YES (Manual tap required on phone screen)")
+    print()
+
+    if result.error_message:
+        print(f"  Error: {result.error_message}")
+        print()
+
+    print(SEPARATOR)
+    print()
+

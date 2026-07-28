@@ -340,7 +340,42 @@ class TestSIMSelection:
         assert "unknown" in selected.selection_method.lower()
 
 
-# ── 8. Hardware: actual SMS composer ────────────────────────────────
+# ── 7b. Test Recipients & Sent Verification ───────────────────────
+
+class TestTestRecipients:
+    """Tests for test recipients configuration."""
+
+    def test_configured_recipients(self):
+        """Verify the 3 test recipients exist in config."""
+        from config import TEST_RECIPIENTS, DEFAULT_TEST_RECIPIENT_KEY
+
+        assert "Vaishali Gaikwad" in TEST_RECIPIENTS
+        assert TEST_RECIPIENTS["Vaishali Gaikwad"] == "9657902071"
+        assert "Pramod Gaikwad" in TEST_RECIPIENTS
+        assert TEST_RECIPIENTS["Pramod Gaikwad"] == "9922222249"
+        assert "Sai Gaikwad" in TEST_RECIPIENTS
+        assert TEST_RECIPIENTS["Sai Gaikwad"] == "9371222249"
+        assert DEFAULT_TEST_RECIPIENT_KEY == "Vaishali Gaikwad"
+
+
+class TestSentSMSVerification:
+    """Tests for check_sent_sms_status helper."""
+
+    def test_sent_status_denied_permissions_reported(self):
+        """Returns clear permission denial message when provider access fails."""
+        from exceptions import ADBCommandError
+        from sms_composer import check_sent_sms_status
+
+        err = ADBCommandError(
+            command="content query",
+            returncode=1,
+            stderr="java.lang.SecurityException: Access SIMINFO table from not phone/system UID",
+        )
+        with patch("sms_composer.execute_adb", side_effect=err):
+            msg = check_sent_sms_status("9657902071")
+
+        assert "Android does not expose sent SMS verification without additional permissions." in msg
+
 
 class TestComposerHardware:
     """Tests requiring a physical Android device.

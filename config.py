@@ -37,10 +37,17 @@ ADB_EXECUTABLE: str | None = None
 # that may contain ``adb.exe``.
 ADB_SEARCH_PATHS: list[Path] = []
 
-# ── SMS Test Settings ────────────────────────────────────────────────
-# Recipient used ONLY for composer testing (not a real campaign number).
-# Replace with any number you control before running the SMS composer test.
-SMS_TEST_RECIPIENT: str = "9999999999"
+# ── Test Recipients for Single SMS Verification ──────────────────────
+# Controlled test numbers used for single manual send verification.
+TEST_RECIPIENTS: dict[str, str] = {
+    "Vaishali Gaikwad": "9657902071",
+    "Pramod Gaikwad": "9922222249",
+    "Sai Gaikwad": "9371222249",
+}
+DEFAULT_TEST_RECIPIENT_KEY: str = "Vaishali Gaikwad"
+
+# Recipient used ONLY for generic composer testing (not a real campaign number).
+SMS_TEST_RECIPIENT: str = TEST_RECIPIENTS[DEFAULT_TEST_RECIPIENT_KEY]
 
 # ── SMS Sending SIM Configuration ───────────────────────────────────
 # The SIM slot index (0-based) to use as the outgoing SMS sender.
