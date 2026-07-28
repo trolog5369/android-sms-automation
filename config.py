@@ -37,6 +37,34 @@ ADB_EXECUTABLE: str | None = None
 # that may contain ``adb.exe``.
 ADB_SEARCH_PATHS: list[Path] = []
 
+# ── SMS Test Settings ────────────────────────────────────────────────
+# Recipient used ONLY for composer testing (not a real campaign number).
+# Replace with any number you control before running the SMS composer test.
+SMS_TEST_RECIPIENT: str = "9999999999"
+
+# ── SMS Sending SIM Configuration ───────────────────────────────────
+# The SIM slot index (0-based) to use as the outgoing SMS sender.
+#   0 = SIM 1 (first physical slot)
+#   1 = SIM 2 (second physical slot)
+# Default: 1 (SIM 2 — Vi India in the current hardware setup)
+# Change this when you swap SIMs or run on different hardware.
+SMS_SENDING_SIM_SLOT: int = 1
+
+# Android subscription ID for the sending SIM.
+# This is discovered automatically at runtime from getprop.
+# Set to None to force auto-discovery every time.
+# Set to a specific int (e.g. 2) to hard-override for testing.
+SMS_SENDING_SIM_SUBSCRIPTION_ID: int | None = None
+
+# Safety guard — NEVER set this to True unless SMS sending is fully implemented.
+# While False, the SMS composer opens pre-filled but does NOT send automatically.
+SMS_AUTO_SEND_ENABLED: bool = False
+
+# Minimum seconds required between consecutive SMS composer test launches
+# to prevent spamming intents / notifications on the phone.
+SMS_TEST_COOLDOWN_SECONDS: int = 10
+SMS_TEST_LOCK_FILE: Path = LOG_DIR / ".sms_test_lock"
+
 # ── App metadata ─────────────────────────────────────────────────────
 APP_NAME: str = "Election SMS Automation"
 APP_VERSION: str = "1.0.0"

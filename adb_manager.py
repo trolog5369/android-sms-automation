@@ -39,7 +39,31 @@ _adb_path: Optional[str] = None
 _ADB_TIMEOUT: int = 15
 
 
-# ── Data model for device info ───────────────────────────────────────
+# ── Data models ───────────────────────────────────────────────────────
+
+@dataclass
+class SIMInfo:
+    """Metadata for a single physical SIM card.
+
+    Attributes:
+        slot: 1-based physical slot number (1 = first slot, 2 = second).
+        state: SIM state string from ``gsm.sim.state``
+               (``LOADED``, ``ABSENT``, ``PIN_REQUIRED``, etc.).
+        carrier: Operator name from ``persist.radio.simN.spn`` or
+                 ``gsm.sim.operator.alpha`` (e.g. ``"airtel"``).
+        subscription_id: Android subscription ID (from
+                         ``settings get global multi_sim_sms`` et al.).
+                         This is *not* the same as the slot number.
+        phone_number: MSISDN if Android exposes it; empty string otherwise.
+                      Most devices/carriers do not expose this via ADB.
+    """
+
+    slot: int = 0
+    state: str = ""
+    carrier: str = ""
+    subscription_id: str = ""
+    phone_number: str = ""
+
 
 @dataclass
 class DeviceInfo:
@@ -52,8 +76,8 @@ class DeviceInfo:
         android_version: Android OS version string (e.g. ``13``).
         usb_debugging: Whether USB debugging is confirmed enabled.
         default_sms_app: Package name of the default SMS app.
-        sim_count: Number of active SIM cards detected.
-        default_sms_sim: Index/ID of the default SIM for SMS.
+        sim_info: List of :class:`SIMInfo` for each detected SIM.
+        sms_subscription_id: Subscription ID currently set for SMS.
     """
 
     serial: str = ""
@@ -62,8 +86,13 @@ class DeviceInfo:
     android_version: str = ""
     usb_debugging: str = ""
     default_sms_app: str = ""
-    sim_count: str = ""
-    default_sms_sim: str = ""
+    sim_info: list = None  # list[SIMInfo]
+    sms_subscription_id: str = ""
+
+    def __post_init__(self) -> None:
+        if self.sim_info is None:
+            self.sim_info = []
+
 
 
 # ── ADB Discovery ───────────────────────────────────────────────────
@@ -341,63 +370,225 @@ def get_usb_debugging_status() -> str:
 def get_default_sms_app() -> str:
     """Query the default SMS application package name.
 
+    Queries the Android role manager (``dumpsys role``) which is the
+    authoritative source for Android 10+ devices.  Falls back to the
+    legacy settings key for older devices.
+
     Returns:
         The package name string (e.g. ``"com.google.android.apps.messaging"``),
         or ``"unknown"`` if the query fails.
     """
+    # Primary: Android Role Manager (Android 10+)
     try:
-        value: str = execute_adb("shell settings get secure sms_default_application")
-        app = value.strip() if value.strip() and value.strip() != "null" else "unknown"
+        role_output: str = execute_adb("shell dumpsys role")
+        for line in role_output.splitlines():
+            line = line.strip()
+            if line.startswith("holders=") and line != "holders=":
+                # Find the "holders=" line immediately after the SMS role block
+                pkg = line.split("=", 1)[1].strip()
+                if pkg and pkg != "null":
+                    logger.info("Default SMS app (role): %s", pkg)
+                    return pkg
     except (ADBCommandError, ADBTimeoutError):
-        app = "unknown"
-    logger.info("Default SMS app: %s", app)
-    return app
+        pass
+
+    # Fallback: parse SMS role block explicitly
+    try:
+        role_output = execute_adb("shell dumpsys role")
+        in_sms_block = False
+        for line in role_output.splitlines():
+            stripped = line.strip()
+            if "android.app.role.SMS" in stripped:
+                in_sms_block = True
+            if in_sms_block and stripped.startswith("holders="):
+                pkg = stripped.split("=", 1)[1].strip()
+                if pkg and pkg != "null":
+                    logger.info("Default SMS app (role block): %s", pkg)
+                    return pkg
+    except (ADBCommandError, ADBTimeoutError):
+        pass
+
+    # Last resort: legacy settings keys
+    for key in ("secure sms_default_application", "global sms_default_application"):
+        try:
+            value: str = execute_adb(f"shell settings get {key}")
+            v = value.strip()
+            if v and v not in ("null", "N/A"):
+                logger.info("Default SMS app (settings/%s): %s", key, v)
+                return v
+        except (ADBCommandError, ADBTimeoutError):
+            continue
+
+    logger.warning("Could not determine default SMS app.")
+    return "unknown"
 
 
-def get_sim_count() -> str:
-    """Query the number of active SIM cards.
+def get_sim_info() -> list:
+    """Detect all SIM cards using permission-free ``getprop`` APIs.
+
+    Does **not** use ``content://telephony/siminfo`` (requires system UID)
+    or any API that needs PHONE permission.  Parses the following props:
+
+    * ``ro.telephony.sim_slots.count``    — total physical slots
+    * ``gsm.sim.state``                   — comma-separated state per slot
+    * ``gsm.sim.operator.alpha``          — comma-separated carrier per slot
+    * ``persist.radio.simN.spn``          — human-readable carrier name
+
+    Subscription IDs (for multi-SIM routing) are read separately from
+    ``settings get global multi_sim_sms`` / ``multi_sim_data_call``.
 
     Returns:
-        A string representing the SIM count (e.g. ``"1"``, ``"2"``),
-        or ``"unknown"`` if the query fails.
+        A list of :class:`SIMInfo` objects, one per detected SIM.
+        Empty list if the device is single-SIM or props are unavailable.
+    """
+    sims: list[SIMInfo] = []
+
+    # ── 1. How many physical slots? ──────────────────────────────────────
+    try:
+        slot_count_raw: str = execute_adb("shell getprop ro.telephony.sim_slots.count")
+        slot_count: int = int(slot_count_raw.strip()) if slot_count_raw.strip().isdigit() else 1
+    except (ADBCommandError, ADBTimeoutError, ValueError):
+        slot_count = 1
+
+    # ── 2. Per-slot state array ──────────────────────────────────────────
+    try:
+        states_raw: str = execute_adb("shell getprop gsm.sim.state")
+        states: list[str] = [s.strip() for s in states_raw.split(",")]
+    except (ADBCommandError, ADBTimeoutError):
+        states = ["UNKNOWN"] * slot_count
+
+    # Pad to slot_count
+    while len(states) < slot_count:
+        states.append("UNKNOWN")
+
+    # ── 3. Per-slot operator alpha (carrier) array ──────────────────────
+    try:
+        carriers_raw: str = execute_adb("shell getprop gsm.sim.operator.alpha")
+        carriers: list[str] = [c.strip() for c in carriers_raw.split(",")]
+    except (ADBCommandError, ADBTimeoutError):
+        carriers = [""] * slot_count
+
+    while len(carriers) < slot_count:
+        carriers.append("")
+
+    # ── 4. Build per-SIM records ────────────────────────────────────────
+    for slot_idx in range(slot_count):
+        slot_num = slot_idx + 1  # 1-based for display
+        state = states[slot_idx] if slot_idx < len(states) else "UNKNOWN"
+
+        # Carrier: prefer persist.radio.simN.spn (richer name), else gsm prop
+        spn_carrier: str = ""
+        try:
+            spn_raw = execute_adb(f"shell getprop persist.radio.sim{slot_num}.spn")
+            spn_carrier = spn_raw.strip()
+        except (ADBCommandError, ADBTimeoutError):
+            pass
+
+        carrier = spn_carrier or (carriers[slot_idx] if slot_idx < len(carriers) else "")
+
+        # Phone number: try iphonesubinfo (slot-specific call) — often empty on real devices
+        phone_number = ""
+        try:
+            # service call iphonesubinfo 15 i32 <slot_idx> returns line 1 for that slot
+            ph_raw = execute_adb(f"shell service call iphonesubinfo 15 i32 {slot_idx}")
+            # Parse parceled string: extract chars between quotes in result parcel
+            import re
+            parts = re.findall(r"'([^']+)'", ph_raw)
+            candidate = "".join(parts).strip().replace(".", "")
+            if candidate and candidate not in ("null", "N/A"):
+                phone_number = candidate
+        except (ADBCommandError, ADBTimeoutError, ImportError):
+            pass
+
+        sim = SIMInfo(
+            slot=slot_num,
+            state=state,
+            carrier=carrier or "unknown",
+            subscription_id="",      # filled in next step
+            phone_number=phone_number,
+        )
+        sims.append(sim)
+
+    # ── 5. Map subscription IDs & detailed SIM info ──────────────────────
+    # Android assigns subscription IDs (sub IDs) that are NOT the same as slot
+    # numbers. We query dumpsys isub or dumpsys telephony.registry.
+    # dumpsys isub output example:
+    #   Logical SIM slot 0: subId=2
+    #   Logical SIM slot 1: subId=1
+    try:
+        isub_output = execute_adb("shell dumpsys isub")
+        import re
+        # Parse slot -> subId mapping
+        # "Logical SIM slot 0: subId=2"
+        slot_map = re.findall(r"Logical SIM slot (\d+):\s*subId=(\d+)", isub_output)
+        for s_idx_str, sub_id in slot_map:
+            s_idx = int(s_idx_str)
+            if s_idx < len(sims):
+                sims[s_idx].subscription_id = sub_id
+
+        # Also parse SubscriptionInfoInternal for carrier/number if available
+        # e.g., simSlotIndex=1 ... carrierName=Vi India
+        sub_blocks = re.findall(r"id=(\d+).*?simSlotIndex=(-?\d+).*?carrierName=([^ ]+)", isub_output)
+        for sub_id, slot_idx_str, carrier_name in sub_blocks:
+            s_idx = int(slot_idx_str)
+            if 0 <= s_idx < len(sims):
+                if not sims[s_idx].subscription_id:
+                    sims[s_idx].subscription_id = sub_id
+                if carrier_name and carrier_name != "null":
+                    sims[s_idx].carrier = carrier_name
+    except (ADBCommandError, ADBTimeoutError, ImportError):
+        pass
+
+    # Fallback to dumpsys telephony.registry if subscription_id still empty
+    if any(not sim.subscription_id for sim in sims):
+        try:
+            registry = execute_adb("shell dumpsys telephony.registry")
+            current_phone_id: int = -1
+            sub_id_map: dict[int, str] = {}  # phone_id -> sub_id
+            for line in registry.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("Phone Id="):
+                    try:
+                        current_phone_id = int(stripped.split("=")[1])
+                    except ValueError:
+                        current_phone_id = -1
+                if current_phone_id >= 0 and "mSubscriptionId=" in stripped:
+                    try:
+                        sub_id_val = stripped.split("mSubscriptionId=")[1].split()[0]
+                        if sub_id_val.lstrip("-").isdigit() and int(sub_id_val) > 0:
+                            if current_phone_id not in sub_id_map:
+                                sub_id_map[current_phone_id] = sub_id_val
+                    except (IndexError, ValueError):
+                        pass
+
+            for sim in sims:
+                if not sim.subscription_id:
+                    phone_id = sim.slot - 1
+                    if phone_id in sub_id_map:
+                        sim.subscription_id = sub_id_map[phone_id]
+        except (ADBCommandError, ADBTimeoutError):
+            pass
+
+    logger.info("SIM info: %s", [(s.slot, s.carrier, s.subscription_id) for s in sims])
+    return sims
+
+
+def get_sms_subscription_id() -> str:
+    """Return the current Android subscription ID used for SMS.
+
+    This is read from ``settings get global multi_sim_sms`` and represents
+    an Android subscription ID, **not** a slot number.  Returns an empty
+    string if the device is single-SIM or the setting is not configured.
     """
     try:
-        value: str = execute_adb(
-            "shell settings get global multi_sim_data_call"
-        )
-        # Try a more reliable approach via telephony
-        sim_info: str = execute_adb(
-            "shell service call iphonesubinfo 1"
-        )
-        # Fallback: count SIM-related entries
-        sub_list: str = execute_adb(
-            "shell content query --uri content://telephony/siminfo"
-        )
-        # Count rows returned
-        rows = [line for line in sub_list.splitlines() if line.startswith("Row:")]
-        count = str(len(rows)) if rows else "1"
+        value: str = execute_adb("shell settings get global multi_sim_sms")
+        v = value.strip()
+        if v and v not in ("null", "-1", "N/A"):
+            logger.info("SMS subscription ID: %s", v)
+            return v
     except (ADBCommandError, ADBTimeoutError):
-        count = "unknown"
-    logger.info("SIM count: %s", count)
-    return count
-
-
-def get_default_sms_sim() -> str:
-    """Query the default SIM slot used for SMS.
-
-    Returns:
-        The SIM subscription ID or slot description,
-        or ``"unknown"`` if the query fails.
-    """
-    try:
-        value: str = execute_adb(
-            "shell settings get global multi_sim_sms"
-        )
-        sim = value.strip() if value.strip() and value.strip() != "null" else "default"
-    except (ADBCommandError, ADBTimeoutError):
-        sim = "unknown"
-    logger.info("Default SMS SIM: %s", sim)
-    return sim
+        pass
+    return ""
 
 
 def get_device_info(serial: str) -> DeviceInfo:
@@ -416,6 +607,6 @@ def get_device_info(serial: str) -> DeviceInfo:
         android_version=get_android_version(),
         usb_debugging=get_usb_debugging_status(),
         default_sms_app=get_default_sms_app(),
-        sim_count=get_sim_count(),
-        default_sms_sim=get_default_sms_sim(),
+        sim_info=get_sim_info(),
+        sms_subscription_id=get_sms_subscription_id(),
     )

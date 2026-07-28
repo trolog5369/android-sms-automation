@@ -1,21 +1,21 @@
 """Android diagnostics module.
 
 Collects and displays a comprehensive health report covering ADB
-status, device connectivity, and SMS readiness.  All queries are
-wrapped in error handling so the report is always printed — missing
-fields show ``N/A`` rather than crashing.
+status, device connectivity, SIM information, and SMS readiness.
+All queries are wrapped in error handling so the report is always
+printed — missing fields show ``N/A`` rather than crashing.
 
 This module does **not** send SMS or open any apps.
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from adb_manager import (
+    SIMInfo,
     DeviceInfo,
     discover_adb,
-    get_adb_path,
     get_device_info,
     verify_single_device,
 )
@@ -46,8 +46,8 @@ class DiagnosticsReport:
         android_version: OS version string, or ``N/A``.
         usb_debugging: ``enabled``, ``disabled``, or ``N/A``.
         default_sms_app: Package name, or ``N/A``.
-        sim_count: Number of SIMs, or ``N/A``.
-        default_sms_sim: Default SMS SIM info, or ``N/A``.
+        sim_info: List of :class:`~adb_manager.SIMInfo` (one per physical SIM).
+        sms_subscription_id: Android subscription ID set for SMS, or ``""``.
         ready_to_send: Overall readiness boolean.
         error_details: Formatted error string if something went wrong, or ``None``.
     """
@@ -61,8 +61,8 @@ class DiagnosticsReport:
     android_version: str = "N/A"
     usb_debugging: str = "N/A"
     default_sms_app: str = "N/A"
-    sim_count: str = "N/A"
-    default_sms_sim: str = "N/A"
+    sim_info: list = field(default_factory=list)  # list[SIMInfo]
+    sms_subscription_id: str = ""
     ready_to_send: bool = False
     error_details: Optional[str] = None
 
@@ -131,8 +131,8 @@ def run_diagnostics() -> DiagnosticsReport:
         report.android_version = info.android_version or "N/A"
         report.usb_debugging = info.usb_debugging or "N/A"
         report.default_sms_app = info.default_sms_app or "N/A"
-        report.sim_count = info.sim_count or "N/A"
-        report.default_sms_sim = info.default_sms_sim or "N/A"
+        report.sim_info = info.sim_info or []
+        report.sms_subscription_id = info.sms_subscription_id or ""
         report.ready_to_send = True
         logger.info("Diagnostics: Device info collected successfully.")
     except (ADBCommandError, ADBTimeoutError) as exc:
@@ -141,6 +141,49 @@ def run_diagnostics() -> DiagnosticsReport:
 
     _print_report(report)
     return report
+
+
+def _format_sim_section(sim_info: list, sms_subscription_id: str) -> str:
+    """Format the SIM detection section for display.
+
+    Args:
+        sim_info: List of :class:`~adb_manager.SIMInfo` objects.
+        sms_subscription_id: Current SMS subscription ID.
+
+    Returns:
+        A formatted multi-line string ready for printing.
+    """
+    lines: list[str] = []
+
+    loaded_count = sum(1 for s in sim_info if s.state == "LOADED")
+    lines.append(f"  SIMs Detected   : {len(sim_info)} ({loaded_count} active)")
+    lines.append("")
+
+    for sim in sim_info:
+        lines.append(f"    SIM {sim.slot}")
+        lines.append(f"      Slot            : {sim.slot}")
+        lines.append(f"      State           : {sim.state or 'unknown'}")
+        lines.append(f"      Carrier         : {sim.carrier or 'unknown'}")
+        lines.append(f"      Subscription ID : {sim.subscription_id or 'not detected'}")
+        lines.append(f"      Phone Number    : {sim.phone_number or '(not exposed by device)'}")
+        lines.append("")
+
+    # Resolve which SIM is the SMS SIM
+    if sms_subscription_id:
+        # Try to find matching SIM
+        sms_sim = next(
+            (s for s in sim_info if s.subscription_id == sms_subscription_id),
+            None,
+        )
+        if sms_sim:
+            label = f"SIM {sms_sim.slot} — {sms_sim.carrier} (Sub ID: {sms_subscription_id})"
+        else:
+            label = f"Subscription ID {sms_subscription_id} (SIM not matched)"
+        lines.append(f"  Selected SMS SIM : {label}")
+    else:
+        lines.append("  Selected SMS SIM : Not configured (device default)")
+
+    return "\n".join(lines)
 
 
 def _print_report(report: DiagnosticsReport) -> None:
@@ -167,9 +210,15 @@ def _print_report(report: DiagnosticsReport) -> None:
     print(f"  USB Debugging   : {report.usb_debugging}")
     print()
     print(f"  Default SMS App : {report.default_sms_app}")
-    print(f"  SIM Count       : {report.sim_count}")
-    print(f"  Default SMS SIM : {report.default_sms_sim}")
     print()
+
+    # ── Per-SIM block ────────────────────────────────────────────────
+    if report.sim_info:
+        print(_format_sim_section(report.sim_info, report.sms_subscription_id))
+    else:
+        print("  SIMs Detected   : N/A")
+    print()
+
     print(f"  READY TO SEND   : {ready_label}")
     print()
 
