@@ -2,6 +2,8 @@
 
 Provides formatted output functions used by main.py for printing
 the professional summary report.
+
+Device diagnostics have moved to :mod:`diagnostics`.
 """
 
 import sys

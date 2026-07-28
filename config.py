@@ -24,6 +24,19 @@ PHONE_DIGIT_LENGTH: int = 10
 PREVIEW_COUNT: int = 10
 SEPARATOR: str = "-" * 50
 
+# ── ADB settings ─────────────────────────────────────────────────────
+# Explicit path to the ADB executable.  Set this if ADB lives in a
+# non-standard location that is not covered by the automatic search.
+# When set, this takes priority over the automatic search.
+# Example: r"D:\Android\sdk\platform-tools\adb.exe"
+ADB_EXECUTABLE: str | None = None
+
+# Additional directories to probe for ``adb.exe``, checked *after* the
+# built-in locations (system PATH → project tools/ → SDK defaults).
+# Each entry should be a :class:`pathlib.Path` pointing to a directory
+# that may contain ``adb.exe``.
+ADB_SEARCH_PATHS: list[Path] = []
+
 # ── App metadata ─────────────────────────────────────────────────────
 APP_NAME: str = "Election SMS Automation"
 APP_VERSION: str = "1.0.0"
