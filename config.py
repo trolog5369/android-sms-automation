@@ -9,9 +9,8 @@ from pathlib import Path
 # ── Paths ────────────────────────────────────────────────────────────
 BASE_DIR: Path = Path(__file__).resolve().parent
 
-# IMPORTANT:
-# Use test_contacts.csv during testing/verification.
-CONTACT_FILE: Path = BASE_DIR / "test_contacts.csv"
+# Production campaign contact file
+CONTACT_FILE: Path = BASE_DIR / "Ghodnadi Bar Clean.xlsx"
 
 MESSAGE_FILE: Path = BASE_DIR / "message.txt"
 LOG_DIR: Path = BASE_DIR / "logs"
