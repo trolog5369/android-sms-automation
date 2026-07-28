@@ -1,13 +1,14 @@
 """ElectionSMS — main entry point.
 
 Orchestrates contact extraction, validation, device diagnostics,
-and single manual SMS send verification workflows.
+single manual SMS verification, and sequential manual SMS sending.
 
 CLI Modes:
   python main.py                     Run full contact extraction, validation, and diagnostics.
   python main.py --diagnostics       Run Android ADB discovery & SIM health report only.
   python main.py --sms-test          Launch the Android SMS composer ONCE with pre-filled test message.
   python main.py --single-test-send  Launch SMS composer for a configured test recipient & verify.
+  python main.py --manual-sequence   Run sequential manual SMS sending for all valid contacts.
 
 No SMS messages are sent automatically from this application.
 """
@@ -28,6 +29,7 @@ from diagnostics import DiagnosticsReport, run_diagnostics
 from excel_reader import read_contacts
 from message_reader import read_message
 from models import Contact
+from sequence_manager import run_manual_sequence
 from sms_composer import (
     SMSComposerResult,
     check_sent_sms_status,
@@ -57,7 +59,7 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 
 def main() -> None:
-    """Main entry point supporting --diagnostics, --sms-test, --single-test-send, and default pipeline."""
+    """Main entry point supporting --diagnostics, --sms-test, --single-test-send, --manual-sequence, and default pipeline."""
     parser = argparse.ArgumentParser(
         description="ElectionSMS — Android SMS Automation & Diagnostics Tool",
     )
@@ -75,6 +77,28 @@ def main() -> None:
         "--single-test-send",
         action="store_true",
         help="Launch SMS composer for a configured test recipient and prompt for manual send.",
+    )
+    parser.add_argument(
+        "--manual-sequence",
+        action="store_true",
+        help="Execute step-by-step manual SMS sequence for valid contacts.",
+    )
+    parser.add_argument(
+        "--start",
+        type=int,
+        default=None,
+        help="1-based contact index to begin manual sequence from (e.g. --start 50).",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Maximum number of contacts to process during manual sequence (e.g. --limit 25).",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume manual sequence from the first unlogged valid contact.",
     )
     parser.add_argument(
         "--recipient",
@@ -106,7 +130,55 @@ def main() -> None:
             sys.exit(1)
         return
 
-    # ── Mode 2: --single-test-send ──────────────────────────────────
+    # ── Mode 2: --manual-sequence ───────────────────────────────────
+    if args.manual_sequence:
+        logger.info("Running manual sequence mode. Start: %s, Limit: %s, Resume: %s", args.start, args.limit, args.resume)
+
+        # Step A: Load contacts
+        try:
+            contacts: list[Contact] = read_contacts(EXCEL_FILE)
+        except FileNotFoundError as exc:
+            logger.error("Excel file error: %s", exc)
+            print(f"  [ERROR] {exc}")
+            sys.exit(1)
+        except ValueError as exc:
+            logger.error("Excel column error: %s", exc)
+            print(f"  [ERROR] {exc}")
+            sys.exit(1)
+
+        total_contacts: int = len(contacts)
+
+        # Step B: Validate contacts & display summary
+        result: ValidationResult = validate_contacts(contacts)
+        print_summary(total_contacts, result)
+
+        # Step C: Device Readiness Check
+        report = run_diagnostics()
+        if not report.ready_to_send:
+            print("  Cannot start manual sequence: Android device is not connected or ready.")
+            print()
+            logger.error("Manual sequence aborted — device not ready.")
+            sys.exit(1)
+
+        # Step D: Read message
+        try:
+            message: str = read_message(MESSAGE_FILE)
+        except (FileNotFoundError, ValueError, UnicodeDecodeError) as exc:
+            logger.error("Message file error: %s", exc)
+            print(f"  [ERROR] {exc}")
+            sys.exit(1)
+
+        # Step E: Run sequential workflow
+        run_manual_sequence(
+            contacts=result.valid_contacts,
+            message=message,
+            start_index=args.start,
+            limit=args.limit,
+            resume=args.resume,
+        )
+        return
+
+    # ── Mode 3: --single-test-send ──────────────────────────────────
     if args.single_test_send:
         logger.info("Running single-test-send mode. Target: %s", args.recipient)
 
@@ -131,7 +203,7 @@ def main() -> None:
             sys.exit(1)
 
         try:
-            message: str = read_message(MESSAGE_FILE)
+            message = read_message(MESSAGE_FILE)
         except (FileNotFoundError, ValueError, UnicodeDecodeError) as exc:
             logger.error("Message file error: %s", exc)
             print(f"  [ERROR] {exc}")
@@ -170,7 +242,7 @@ def main() -> None:
 
         return
 
-    # ── Mode 3: --sms-test only ─────────────────────────────────────
+    # ── Mode 4: --sms-test only ─────────────────────────────────────
     if args.sms_test:
         logger.info("Running SMS test mode.")
         report = run_diagnostics()
@@ -202,12 +274,12 @@ def main() -> None:
             logger.info("SMS composer test completed successfully.")
         return
 
-    # ── Mode 4: Default dry-run pipeline ────────────────────────────
+    # ── Mode 5: Default dry-run pipeline ────────────────────────────
     logger.info("Running default dry-run pipeline.")
 
     # Step 1: Read contacts
     try:
-        contacts: list[Contact] = read_contacts(EXCEL_FILE)
+        contacts = read_contacts(EXCEL_FILE)
     except FileNotFoundError as exc:
         logger.error("Excel file error: %s", exc)
         print(f"  [ERROR] {exc}")
@@ -217,10 +289,10 @@ def main() -> None:
         print(f"  [ERROR] {exc}")
         sys.exit(1)
 
-    total_contacts: int = len(contacts)
+    total_contacts = len(contacts)
 
     # Step 2: Validate contacts
-    result: ValidationResult = validate_contacts(contacts)
+    result = validate_contacts(contacts)
     logger.info(
         "Validation: %d valid, %d invalid, %d duplicates removed.",
         len(result.valid_contacts),
@@ -246,7 +318,7 @@ def main() -> None:
 
     print("  ⚠  Dry-Run Complete. No SMS messages were sent.")
     print("  ⚠  SMS Composer was NOT opened automatically.")
-    print("  ℹ  To test single SMS send manually, run: python main.py --single-test-send")
+    print("  ℹ  To start sequential manual SMS workflow, run: python main.py --manual-sequence")
     print()
     logger.info("Dry-run complete. No SMS sent, no composer opened.")
 

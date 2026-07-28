@@ -71,6 +71,7 @@ SMS_AUTO_SEND_ENABLED: bool = False
 # to prevent spamming intents / notifications on the phone.
 SMS_TEST_COOLDOWN_SECONDS: int = 10
 SMS_TEST_LOCK_FILE: Path = LOG_DIR / ".sms_test_lock"
+SEQUENCE_LOG_FILE: Path = LOG_DIR / "manual_sequence.log"
 
 # ── App metadata ─────────────────────────────────────────────────────
 APP_NAME: str = "Election SMS Automation"
